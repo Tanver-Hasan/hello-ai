@@ -16,6 +16,9 @@ For all limits and quotas, retrieve from the product's `/platform/limits/` page.
 | `npx wrangler dev` | Local development |
 | `npx wrangler deploy` | Deploy to Cloudflare |
 | `npx wrangler types` | Generate TypeScript types |
+| `npm run dev` | Run the React frontend and Worker with the Cloudflare Vite plugin |
+| `npm run build` | Build the React frontend and Worker into `dist/` |
+| `npm run typecheck` | Type-check the Worker and React frontend |
 
 Run `wrangler types` after changing bindings in wrangler.jsonc.
 

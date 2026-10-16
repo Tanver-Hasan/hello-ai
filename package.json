@@ -3,17 +3,32 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "start": "wrangler dev",
+    "build": "vite build",
+    "deploy": "npm run build && wrangler deploy",
+    "dev": "vite dev",
+    "preview": "vite preview",
+    "start": "vite dev",
     "test": "vitest",
+    "typecheck": "tsc --noEmit && tsc -p app/tsconfig.json",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.63.1",
     "@cloudflare/vitest-plugin": "^1.0.0",
     "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^5.5.2",
+    "vite": "^8.3.4",
     "vitest": "~4.1.0",
     "wrangler": "^4.151.0"
+  },
+  "dependencies": {
+    "agents": "^0.28.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   }
 }
