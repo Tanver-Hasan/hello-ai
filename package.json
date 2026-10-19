@@ -25,10 +25,14 @@
     "wrangler": "^4.151.0"
   },
   "dependencies": {
-    "agents": "^0.28.1",
+    "@ai-sdk/react": "4.0.140",
+    "@cloudflare/ai-chat": "0.12.1",
+    "agents": "0.28.1",
+    "ai": "7.0.137",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "workers-ai-provider": "4.0.0"
   }
 }

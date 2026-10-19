@@ -154,7 +154,7 @@ Clef
   → MCP: readLesson
   → approval
   → Sandbox: Python, 1.4s
-  → Auto Router: Nemotron
+  → Auto Router: Kimi K2.7 Code
   → Protected Gateway
 ```
 

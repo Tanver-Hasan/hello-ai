@@ -27,6 +27,24 @@ Learn:
 - Readonly spectator connections
 - Validation and authorization boundaries
 
+## Implemented in the lab
+
+Lesson 13 now adds:
+
+- Backward-compatible `ConversationAgentState`
+- Synchronized `mode`, `traceVisible`, and `version`
+- Optimistic `setPreferences()` RPC
+- Validated `RoutingSnapshot`
+- Idempotent `routing_events` SQLite audit table
+- Request-ID deduplication
+- Access-aware readonly connections
+- React preference synchronization across tabs
+- Learning Trace fields for Agent version, confidence, request ID, and cost
+- Background Gateway-cost lookup before Agent audit persistence
+- Deterministic Agent state, conflict, isolation, and readonly-policy tests
+
+The original chat endpoints and `Conversation` Durable Object remain unchanged.
+
 ## Step 1: Model one coordination atom
 
 Use one Agent instance per existing conversation UUID:
@@ -49,15 +67,14 @@ type RoutingSnapshot = {
 	cost: number;
 };
 
-type ConversationAgentState = {
-	mode: "stream" | "protected";
-	traceVisible: boolean;
+type ConversationAgentState = EdgewordState & {
+	traceVisible?: boolean;
 	lastRouting?: RoutingSnapshot;
-	version: number;
+	version?: number;
 };
 ```
 
-Keep synchronized state compact. Store large audit history in the agent’s SQLite database rather than broadcasting it with every state update.
+The new fields are temporarily optional so Agent instances deployed during Lesson 12 can be normalized safely. New instances initialize both values. Keep synchronized state compact and store audit history in SQLite.
 
 ## Step 3: Validate state transitions
 
@@ -144,17 +161,20 @@ Persist only sanitized telemetry—never prompts, answers, Access tokens, or Gat
 ## Step 6: Add readonly spectators
 
 ```ts
-shouldConnectionBeReadonly(connection: Connection) {
-	return verifiedRole(connection) === "viewer";
+shouldConnectionBeReadonly(
+	_connection: Connection,
+	context: ConnectionContext,
+) {
+	return isReadonlyAgentRequest(context.request);
 }
 ```
 
-Readonly connections can observe state but cannot call mutating callable methods or push state. Derive the role from the Cloudflare Access identity already protecting the deployed lab.
+The implementation treats explicit `role=viewer` connections and remote connections without the Access JWT header as readonly. The viewer query can only reduce privileges. Access remains responsible for authenticating remote users before the Worker.
 
 ## Step 7: Connect multiple React clients
 
 ```tsx
-const agent = useAgent<EdgewordAgent, ConversationAgentState>({
+const agent = useAgent<ConversationAgentState>({
 	agent: "EdgewordAgent",
 	name: conversationId,
 });

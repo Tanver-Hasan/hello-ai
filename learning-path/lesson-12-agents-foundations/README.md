@@ -167,7 +167,7 @@ npm run cf-typegen
 Create `src/agents/edgeword.ts`:
 
 ```ts
-import { Agent, callable } from "agents";
+import { Agent, callable, type Connection } from "agents";
 
 export type EdgewordState = {
 	mode: "stream" | "protected";
@@ -182,7 +182,10 @@ export class EdgewordAgent extends Agent<Env, EdgewordState> {
 		turnCount: 0,
 	};
 
-	validateStateChange(nextState: EdgewordState) {
+	override validateStateChange(
+		nextState: EdgewordState,
+		_source: Connection | "server",
+	) {
 		if (nextState.mode !== "stream" && nextState.mode !== "protected") {
 			throw new Error("Invalid mode");
 		}
@@ -225,12 +228,22 @@ import { routeAgentRequest } from "agents";
 export { EdgewordAgent } from "./agents/edgeword";
 ```
 
-At the beginning of `fetch()`:
+Route Agent traffic after deriving the trusted client key and applying the existing chat rate limiter:
 
 ```ts
-const agentResponse = await routeAgentRequest(request, env);
-if (agentResponse) return agentResponse;
+if (url.pathname.startsWith("/agents/")) {
+	const rateLimit = await enforceRateLimit(
+		env.CHAT_RATE_LIMITER,
+		`agent:${actor}`,
+	);
+	if (rateLimit) return rateLimit;
+
+	const agentResponse = await routeAgentRequest(request, env);
+	if (agentResponse) return agentResponse;
+}
 ```
+
+This limits connection attempts. Later lessons add per-message and mutating-RPC quotas inside the Agent.
 
 Agent URLs follow:
 
@@ -250,22 +263,26 @@ Use the same validated conversation UUID as the Agent instance name. This preser
 
 ```tsx
 import { useAgent } from "agents/react";
-import type { EdgewordAgent, EdgewordState } from "../src/agents/edgeword";
+import type { EdgewordState } from "../src/agents/types";
 
 function AgentStatus({ conversationId }: { conversationId: string }) {
-	const agent = useAgent<EdgewordAgent, EdgewordState>({
+	const agent = useAgent<EdgewordState>({
 		agent: "EdgewordAgent",
 		name: conversationId,
 	});
+
+	const selectMode = (mode: EdgewordState["mode"]) => {
+		void agent.call<EdgewordState>("setMode", [mode]);
+	};
 
 	return (
 		<div>
 			<p>Mode: {agent.state?.mode ?? "stream"}</p>
 			<p>Turns: {agent.state?.turnCount ?? 0}</p>
-			<button onClick={() => agent.call("setMode", ["stream"])}>
+			<button onClick={() => selectMode("stream")}>
 				Streaming
 			</button>
-			<button onClick={() => agent.call("setMode", ["protected"])}>
+			<button onClick={() => selectMode("protected")}>
 				Protected
 			</button>
 		</div>
@@ -274,6 +291,8 @@ function AgentStatus({ conversationId }: { conversationId: string }) {
 ```
 
 `useAgent` automatically converts the class name to the route’s kebab-case format and reconnects WebSockets with backoff.
+
+In Edgeword, place this information in the existing Learning Trace as an `Agent sidecar` section. Keep the HTTP mode selection functional even if Agent synchronization is unavailable.
 
 ## Step 8: Test
 

@@ -2,9 +2,15 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useAgent } from "agents/react";
+import { useAgentChat } from "@cloudflare/ai-chat/react";
+import type {
+    ConversationAgentState,
+} from "../src/agents/types";
+
 import "./styles.css";
 
-type Mode = "stream" | "protected";
+type Mode = "stream" | "protected" | "agent";
 type Role = "user" | "assistant";
 
 type Message = {
@@ -294,6 +300,17 @@ function App() {
 	const controllerRef = useRef<AbortController | null>(null);
 	const messageEndRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const edgewordAgent = useAgent<ConversationAgentState>({
+		agent: "EdgewordAgent",
+		name: conversationId,
+	});
+	const edgewordChatConnection = useAgent({
+		agent: "EdgewordChatAgent",
+		name: `agent-${conversationId}`,
+	});
+	const agentChat = useAgentChat({
+		agent: edgewordChatConnection,
+	});
 
 	const rememberConversation = (id: string, title?: string) => {
 		setConversations((current) => {
@@ -328,6 +345,53 @@ function App() {
 	useEffect(() => {
 		localStorage.setItem(INSPECTOR_KEY, inspectorOpen ? "open" : "closed");
 	}, [inspectorOpen]);
+
+	useEffect(() => {
+		if (edgewordAgent.state?.mode) {
+			setMode((current) =>
+				current === "agent" ? current : edgewordAgent.state!.mode,
+			);
+		}
+		if (
+			edgewordAgent.state?.traceVisible !== undefined &&
+			window.matchMedia("(min-width: 1101px)").matches
+		) {
+			setInspectorOpen(edgewordAgent.state.traceVisible);
+		}
+	}, [
+		edgewordAgent.state?.mode,
+		edgewordAgent.state?.traceVisible,
+	]);
+
+	useEffect(() => {
+		if (mode !== "agent") return;
+		if (edgewordChatConnection.connectionError) {
+			setStatus("Agent connection unavailable");
+		} else if (agentChat.isRecovering) {
+			setStatus("Recovering Agent response");
+		} else if (agentChat.isStreaming) {
+			setStatus("Agent is responding");
+		} else {
+			setStatus("Agent ready");
+		}
+	}, [
+		mode,
+		edgewordChatConnection.connectionError,
+		agentChat.isRecovering,
+		agentChat.isStreaming,
+	]);
+
+	useEffect(() => {
+		if (mode !== "agent" || !edgewordAgent.state?.lastRouting) return;
+		const routing = edgewordAgent.state.lastRouting;
+		setRoute(routing.decision);
+		setConfidence(routing.confidence);
+		setModel(routing.model);
+		if (routing.weights) setWeights(routing.weights);
+		if (routing.candidateModels) {
+			setCandidateModels(routing.candidateModels);
+		}
+	}, [mode, edgewordAgent.state?.lastRouting]);
 
 	useEffect(() => {
 		fetch("/models")
@@ -370,7 +434,7 @@ function App() {
 
 	useEffect(() => {
 		messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [messages]);
+	}, [messages, agentChat.messages]);
 
 	useEffect(() => {
 		const textarea = textareaRef.current;
@@ -428,7 +492,27 @@ function App() {
 	const send = async (event?: FormEvent) => {
 		event?.preventDefault();
 		const content = prompt.trim();
-		if (!content || sending) return;
+		if (!content || sending || agentChat.isStreaming) return;
+
+		if (mode === "agent") {
+			setPrompt("");
+			setStatus("Agent is responding");
+			rememberConversation(
+				conversationId,
+				content.length > 42 ? `${content.slice(0, 42)}…` : content,
+			);
+			try {
+				await agentChat.sendMessage({
+					role: "user",
+					parts: [{ type: "text", text: content }],
+				});
+			} catch (error) {
+				setStatus(
+					error instanceof Error ? error.message : "Agent request failed",
+				);
+			}
+			return;
+		}
 
 		const userId = crypto.randomUUID();
 		const assistantId = crypto.randomUUID();
@@ -682,6 +766,33 @@ function App() {
 		}
 	};
 
+	const selectMode = (nextMode: Mode) => {
+		setMode(nextMode);
+		if (nextMode === "agent") return;
+		void edgewordAgent
+			.call<ConversationAgentState>("setPreferences", [
+				nextMode,
+				edgewordAgent.state?.traceVisible ?? inspectorOpen,
+				edgewordAgent.state?.version ?? 0,
+			])
+			.catch(() => {
+				setStatus("Agent sync unavailable · chat mode changed locally");
+			});
+	};
+
+	const selectTraceVisibility = (visible: boolean) => {
+		setInspectorOpen(visible);
+		void edgewordAgent
+			.call<ConversationAgentState>("setPreferences", [
+				edgewordAgent.state?.mode ?? mode,
+				visible,
+				edgewordAgent.state?.version ?? 0,
+			])
+			.catch(() => {
+				setStatus("Agent sync unavailable · trace changed locally");
+			});
+	};
+
 	const totalCost = gatewayLogs.reduce((sum, log) => sum + log.cost, 0);
 	const totalTokensIn = gatewayLogs.reduce(
 		(sum, log) => sum + log.tokensIn,
@@ -708,6 +819,27 @@ function App() {
 	const allCatalogModels = modelCatalog
 		? [...new Set(Object.values(modelCatalog.pools).flat())]
 		: [];
+	const agentMessages: Message[] = agentChat.messages
+		.filter(
+			(message): message is typeof message & { role: "user" | "assistant" } =>
+				message.role === "user" || message.role === "assistant",
+		)
+		.map((message) => ({
+			id: message.id,
+			role: message.role,
+			content: message.parts
+				.filter(
+					(part): part is Extract<
+						(typeof message.parts)[number],
+						{ type: "text" }
+					> => part.type === "text",
+				)
+				.map(({ text }) => text)
+				.join(""),
+			pending: message.role === "assistant" && !message.parts.length,
+		}));
+	const visibleMessages = mode === "agent" ? agentMessages : messages;
+	const generating = sending || (mode === "agent" && agentChat.isStreaming);
 
 	return (
 		<div className={`app-shell ${inspectorOpen ? "" : "inspector-hidden"}`}>
@@ -794,7 +926,7 @@ function App() {
 						}
 						aria-pressed={inspectorOpen}
 						className="inspector-toggle"
-						onClick={() => setInspectorOpen((open) => !open)}
+						onClick={() => selectTraceVisibility(!inspectorOpen)}
 						title={
 							inspectorOpen ? "Hide learning trace" : "Show learning trace"
 						}
@@ -805,23 +937,30 @@ function App() {
 					<div className="mode-switch" role="group" aria-label="Response mode">
 						<button
 							aria-pressed={mode === "stream"}
-							onClick={() => setMode("stream")}
+							onClick={() => selectMode("stream")}
 							type="button"
 						>
 							Streaming
 						</button>
 						<button
 							aria-pressed={mode === "protected"}
-							onClick={() => setMode("protected")}
+							onClick={() => selectMode("protected")}
 							type="button"
 						>
 							Protected
+						</button>
+						<button
+							aria-pressed={mode === "agent"}
+							onClick={() => selectMode("agent")}
+							type="button"
+						>
+							Agent
 						</button>
 					</div>
 				</header>
 
 				<section className="message-scroll">
-					{messages.length === 0 ? (
+					{visibleMessages.length === 0 ? (
 						<div className="empty-state">
 							<div className="empty-orbit">
 								<span />
@@ -850,7 +989,7 @@ function App() {
 						</div>
 					) : (
 						<div className="messages">
-							{messages.map((message) => (
+							{visibleMessages.map((message) => (
 								<article className={`message ${message.role}`} key={message.id}>
 									<div className="message-avatar">
 										{message.role === "user" ? "You" : "AI"}
@@ -869,7 +1008,13 @@ function App() {
 														%
 													</span>
 												)}
-												<span>{mode === "protected" ? "Protected" : "Live"}</span>
+												<span>
+													{mode === "protected"
+														? "Protected"
+														: mode === "agent"
+															? "Agent"
+															: "Live"}
+												</span>
 											</div>
 										)}
 										<div
@@ -934,11 +1079,17 @@ function App() {
 								/>
 								<span>{prompt.length}/4000</span>
 							</div>
-							{sending ? (
+							{generating ? (
 								<button
 									aria-label="Stop generation"
 									className="send-button stop"
-									onClick={() => controllerRef.current?.abort()}
+									onClick={() => {
+										if (mode === "agent") {
+											void agentChat.stop();
+										} else {
+											controllerRef.current?.abort();
+										}
+									}}
 									type="button"
 								>
 									<Icon name="stop" />
@@ -971,13 +1122,99 @@ function App() {
 						<span className={telemetryLoading ? "pulse-dot" : "trace-dot"} />
 						<button
 							aria-label="Hide learning trace"
-							onClick={() => setInspectorOpen(false)}
+							onClick={() => selectTraceVisibility(false)}
 							type="button"
 						>
 							<Icon name="close" size={16} />
 						</button>
 					</div>
 				</div>
+
+				<section className="trace-section">
+					<div className="section-title">
+						<span>00</span>
+						Agent sidecar
+					</div>
+					<div className="protection-row">
+						<span>Connection</span>
+						<strong>
+							{edgewordAgent.connectionError
+								? "Unavailable"
+								: edgewordAgent.identified
+									? "Connected"
+									: "Connecting"}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Instance</span>
+						<strong title={conversationId}>
+							{conversationId.slice(0, 8)}…
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Synced mode</span>
+						<strong>{edgewordAgent.state?.mode ?? mode}</strong>
+					</div>
+					<div className="protection-row">
+						<span>Trace visible</span>
+						<strong>
+							{edgewordAgent.state?.traceVisible ?? inspectorOpen
+								? "Yes"
+								: "No"}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>State version</span>
+						<strong>{edgewordAgent.state?.version ?? 0}</strong>
+					</div>
+					<div className="protection-row">
+						<span>Agent turns</span>
+						<strong>{edgewordAgent.state?.turnCount ?? 0}</strong>
+					</div>
+					<div className="protection-row">
+						<span>Last route</span>
+						<strong>
+							{edgewordAgent.state?.lastRouting?.decision ??
+								edgewordAgent.state?.lastDecision ??
+								"None"}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Last model</span>
+						<strong>
+							{shortModel(
+								edgewordAgent.state?.lastRouting?.model ??
+									edgewordAgent.state?.lastModel,
+							)}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Confidence</span>
+						<strong>
+							{edgewordAgent.state?.lastRouting
+								? `${Math.round(
+										edgewordAgent.state.lastRouting.confidence * 100,
+									)}%`
+								: "None"}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Request</span>
+						<strong title={edgewordAgent.state?.lastRouting?.requestId}>
+							{edgewordAgent.state?.lastRouting?.requestId
+								? `${edgewordAgent.state.lastRouting.requestId.slice(0, 8)}…`
+								: "None"}
+						</strong>
+					</div>
+					<div className="protection-row">
+						<span>Recorded cost</span>
+						<strong>
+							{edgewordAgent.state?.lastRouting
+								? `$${edgewordAgent.state.lastRouting.cost.toFixed(6)}`
+								: "None"}
+						</strong>
+					</div>
+				</section>
 
 				<section className="trace-section">
 					<div className="section-title">

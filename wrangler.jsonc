@@ -7,6 +7,9 @@
 	"name": "hello-ai",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-06",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"observability": {
 		"logs": {
 			"enabled": true,
@@ -69,6 +72,7 @@
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": [
+			"/agents/*",
 			"/chat",
 			"/chat/*",
 			"/conversations/*",
@@ -81,11 +85,27 @@
 			{
 				"name": "CONVERSATIONS",
 				"class_name": "Conversation"
+			},
+			{
+				"name": "EdgewordAgent",
+				"class_name": "EdgewordAgent"
+			},
+			{
+				"name": "EdgewordChatAgent",
+				"class_name": "EdgewordChatAgent"
 			}
 		]
 	},
 	"exports": {
 		"Conversation": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		},
+		"EdgewordAgent": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		},
+		"EdgewordChatAgent": {
 			"type": "durable-object",
 			"storage": "sqlite"
 		}

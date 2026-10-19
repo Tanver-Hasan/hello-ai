@@ -1,4 +1,27 @@
 import { addNumbers } from "./tools/calculator";
+import { routeAgentRequest } from "agents";
+import type { RoutingSnapshot } from "./agents/types";
+import {
+	COMPLEX_MODELS,
+	DECISION_MODEL,
+	MODEL,
+	SIMPLE_MODELS,
+	TOOL_MODELS,
+	aiGatewayOptions,
+	decisionGatewayOptions,
+	modelsForDecision,
+	parseRouteDecision,
+	type RouteDecision,
+} from "./ai-routing";
+
+export { EdgewordAgent } from "./agents/edgeword";
+export { EdgewordChatAgent } from "./agents/chat";
+export {
+	aiGatewayOptions,
+	modelsForDecision,
+	parseRouteDecision,
+	type RouteDecision,
+} from "./ai-routing";
 
 /**
  * Welcome to Cloudflare Workers! This is your first worker.
@@ -12,37 +35,6 @@ import { addNumbers } from "./tools/calculator";
  *
  * Learn more at https://developers.cloudflare.com/workers/
  */
-
-const MODEL = "cloudflare/auto";
-const DECISION_MODEL = "@cf/cloudflare/clef-flash";
-const NVIDIA_MODEL = "@cf/nvidia/nemotron-3-120b-a12b";
-const SIMPLE_MODELS = [
-	"@cf/google/gemma-4-26b-a4b-it",
-	"@cf/openai/gpt-oss-20b",
-];
-const COMPLEX_MODELS = [
-	"@cf/google/gemma-4-26b-a4b-it",
-	"@cf/moonshotai/kimi-k2.7-code",
-	"@cf/qwen/qwen3.8-27b",
-	"@cf/zai-org/glm-5.2",
-	NVIDIA_MODEL,
-];
-const TOOL_MODELS = [
-	"@cf/google/gemma-4-26b-a4b-it",
-	"@cf/moonshotai/kimi-k2.7-code",
-	NVIDIA_MODEL,
-];
-const MIN_DECISION_CONFIDENCE = 0.65;
-
-export type RouteDecision = {
-	route: "simple" | "complex" | "tool";
-	confidence: number;
-	weights: {
-		simple: number;
-		complex: number;
-		tool: number;
-	};
-};
 
 const CALCULATOR_TOOL: ChatCompletionTool = {
 	type: "function",
@@ -288,112 +280,6 @@ async function collectAiText(
 			return text;
 		}
 	}
-}
-
-export function aiGatewayOptions(
-	gatewayId: string,
-	requestId: string,
-	phase: string,
-	allowedModels: string[] = COMPLEX_MODELS,
-): AiOptions {
-	return {
-		gateway: {
-			id: gatewayId,
-			skipCache: true,
-			collectLog: true,
-			metadata: {
-				requestId,
-				feature: "durable_chat",
-				phase,
-			},
-		},
-		extraHeaders: {
-			"cf-aig-session-id": requestId,
-			"cf-aig-turn-id": requestId,
-			"cf-aig-allowed-models": allowedModels.join(","),
-		},
-	};
-}
-
-function decisionGatewayOptions(
-	gatewayId: string,
-	requestId: string,
-): AiOptions {
-	return {
-		gateway: {
-			id: gatewayId,
-			skipCache: true,
-			collectLog: true,
-			metadata: {
-				requestId,
-				feature: "durable_chat",
-				phase: "clef_decision",
-			},
-		},
-	};
-}
-
-export function parseRouteDecision(response: unknown): RouteDecision {
-	const fallback = {
-		route: "complex" as const,
-		confidence: 0,
-		weights: { simple: 0, complex: 0, tool: 0 },
-	};
-	if (
-		typeof response !== "object" ||
-		response === null ||
-		!("answers" in response) ||
-		typeof response.answers !== "object" ||
-		response.answers === null ||
-		!("route" in response.answers) ||
-		typeof response.answers.route !== "object" ||
-		response.answers.route === null
-	) {
-		return fallback;
-	}
-
-	const answer = response.answers.route;
-	const route =
-		"choice" in answer &&
-		(answer.choice === "simple" ||
-			answer.choice === "complex" ||
-			answer.choice === "tool")
-			? answer.choice
-			: "complex";
-	const confidence =
-		"confidence" in answer && typeof answer.confidence === "number"
-			? answer.confidence
-			: 0;
-	const probabilities =
-		"probabilities" in answer &&
-		typeof answer.probabilities === "object" &&
-		answer.probabilities !== null
-			? answer.probabilities
-			: {};
-	const weights = {
-		simple:
-			"simple" in probabilities && typeof probabilities.simple === "number"
-				? probabilities.simple
-				: 0,
-		complex:
-			"complex" in probabilities && typeof probabilities.complex === "number"
-				? probabilities.complex
-				: 0,
-		tool:
-			"tool" in probabilities && typeof probabilities.tool === "number"
-				? probabilities.tool
-				: 0,
-	};
-
-	return confidence >= MIN_DECISION_CONFIDENCE
-		? { route, confidence, weights }
-		: { route: "complex", confidence, weights };
-}
-
-export function modelsForDecision(decision: RouteDecision): string[] {
-	if (decision.route === "simple") return SIMPLE_MODELS;
-	if (decision.route === "tool") return TOOL_MODELS;
-	return COMPLEX_MODELS;
 }
 
 async function decideRoute(
@@ -847,11 +733,57 @@ function sanitizeGatewayLog(log: AiGatewayLog) {
 	};
 }
 
+async function syncAgentRouting(
+	env: Env,
+	conversationId: string,
+	gatewayId: string,
+	logIds: string[],
+	snapshot: Omit<RoutingSnapshot, "cost">,
+): Promise<void> {
+	let cost = 0;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const logs = (
+			await Promise.all(
+				logIds.map(async (logId) => {
+					try {
+						return await env.AI.gateway(gatewayId).getLog(logId);
+					} catch {
+						return null;
+					}
+				}),
+			)
+		).filter((log) => log !== null);
+
+		if (logs.length > 0) {
+			cost = logs.reduce((sum, log) => sum + (log.cost ?? 0), 0);
+			break;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 300));
+	}
+
+	await env.EdgewordAgent.getByName(conversationId).recordRouting({
+		...snapshot,
+		cost,
+	});
+}
+
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const url = new URL(request.url);
 		const requestId = crypto.randomUUID();
 		const actor = clientKey(request);
+
+		if (url.pathname.startsWith("/agents/")) {
+			const agentName = url.pathname.split("/")[2] ?? "unknown";
+			const rateLimit = await enforceRateLimit(
+				env.CHAT_RATE_LIMITER,
+				`agent:${actor}:${agentName}`,
+			);
+			if (rateLimit) return rateLimit;
+
+			const agentResponse = await routeAgentRequest(request, env);
+			if (agentResponse) return agentResponse;
+		}
 
 		if (request.method === "GET" && url.pathname === "/telemetry") {
 			const rateLimit = await enforceRateLimit(
@@ -999,11 +931,38 @@ export default {
 					logIds,
 				);
 
-				if (content.trim()) {
-					await conversation.appendMessage("assistant", content);
-				}
+					if (content.trim()) {
+						await conversation.appendMessage("assistant", content);
+					}
+					ctx.waitUntil(
+						syncAgentRouting(
+							env,
+							route.id,
+							env.AI_PROTECTED_GATEWAY_ID,
+							logIds,
+							{
+								requestId,
+								decision: decision.route,
+								confidence: decision.confidence,
+								model: routedModel,
+								weights: decision.weights,
+								candidateModels: modelsForDecision(decision),
+							},
+						).catch((error) => {
+							console.error(
+								JSON.stringify({
+									event: "agent_routing_sync_failed",
+									requestId,
+									message:
+										error instanceof Error
+											? error.message
+											: "Unknown error",
+								}),
+							);
+						}),
+					);
 
-				return Response.json(
+					return Response.json(
 					{
 						response: content,
 						requestId,
@@ -1089,18 +1048,32 @@ export default {
 					logIds,
 				);
 
-				const [clientStream, persistenceStream] = stream.tee();
-				ctx.waitUntil(
-					collectAiText(persistenceStream)
-						.then(async (content) => {
-							if (content.trim()) {
-								await conversation.appendMessage("assistant", content);
-							}
-						})
+					const [clientStream, persistenceStream] = stream.tee();
+					ctx.waitUntil(
+						collectAiText(persistenceStream)
+							.then(async (content) => {
+								if (content.trim()) {
+									await conversation.appendMessage("assistant", content);
+								}
+								await syncAgentRouting(
+									env,
+									route.id,
+									env.AI_GATEWAY_ID,
+									logIds,
+									{
+										requestId,
+										decision: decision.route,
+										confidence: decision.confidence,
+										model: routedModel,
+										weights: decision.weights,
+										candidateModels: modelsForDecision(decision),
+									},
+								);
+							})
 						.catch((error) => {
-							console.error(
-								JSON.stringify({
-									event: "conversation_persistence_failed",
+								console.error(
+									JSON.stringify({
+										event: "stream_persistence_or_agent_sync_failed",
 									conversationId: route.id,
 									message:
 										error instanceof Error ? error.message : "Unknown error",
@@ -1152,7 +1125,13 @@ export default {
 			if (rateLimit) return rateLimit;
 
 			const conversation = env.CONVERSATIONS.getByName(deleteMatch[1]);
-			await conversation.deleteConversation();
+			await Promise.all([
+				conversation.deleteConversation(),
+				env.EdgewordAgent.getByName(deleteMatch[1]).deleteAgentData(),
+				env.EdgewordChatAgent.getByName(
+					`agent-${deleteMatch[1]}`,
+				).destroy(),
+			]);
 			return new Response(null, { status: 204 });
 		}
 

@@ -40,15 +40,41 @@ Agent Chat uses a separate Durable Object class and message store. It must not r
 - Clef-flash and Auto Router
 - React WebSocket client
 
+## Implemented in the lab
+
+Lesson 14 now adds:
+
+- A separate `EdgewordChatAgent` Durable Object binding
+- A third React mode named **Agent**
+- `AIChatAgent` SQLite message persistence
+- Resumable Agent WebSocket streaming
+- A 40-message Agent history limit
+- Shared Clef decision parsing and Auto Router pools
+- Streaming AI Gateway metadata and affinity headers
+- A server-owned, runtime-validated `addNumbers` AI SDK tool
+- A three-step maximum tool loop
+- Agent routing data in the existing Learning Trace
+- Agent stream recovery and explicit stop controls
+- Independent Agent storage deletion when a conversation is deleted
+
+Streaming and Protected modes continue to use their original HTTP routes and `Conversation` storage.
+
 ## Step 1: Install the chat stack
 
 Retrieve compatible stable versions before implementation:
 
 ```bash
-npm install @cloudflare/ai-chat agents ai @ai-sdk/react workers-ai-provider
+npm install --save-exact \
+	@cloudflare/ai-chat@0.12.1 \
+	agents@0.28.1 \
+	ai@7.0.137 \
+	@ai-sdk/react@4.0.140 \
+	workers-ai-provider@4.0.0
 ```
 
 `AIChatAgent` extends the lower-level `Agent` class.
+
+`agents@0.28.1` is the security-patched exception to the seven-day package-age preference; older compatible releases include high-severity MCP OAuth advisories.
 
 ## Step 2: Create the server agent
 
@@ -74,7 +100,7 @@ export class EdgewordChatAgent extends AIChatAgent<Env> {
 }
 ```
 
-The SDK automatically persists Agent Chat messages in its own SQLite-backed Agent instance and synchronizes them with connected clients. This first smoke test uses a fixed model; Step 6 adds the current Clef and Auto Router behavior to the optional mode.
+The SDK automatically persists Agent Chat messages in its own SQLite-backed Agent instance and synchronizes them with connected clients. The completed implementation is in `src/agents/chat.ts` and includes the Clef/Auto Router integration from Step 6.
 
 ## Step 3: Bind and route
 

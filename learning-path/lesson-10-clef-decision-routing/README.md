@@ -97,19 +97,15 @@ const COMPLEX_MODELS = [
 	"@cf/moonshotai/kimi-k2.7-code",
 	"@cf/qwen/qwen3.8-27b",
 	"@cf/zai-org/glm-5.2",
-	"@cf/nvidia/nemotron-3-120b-a12b",
 ];
 
 const TOOL_MODELS = [
 	"@cf/google/gemma-4-26b-a4b-it",
 	"@cf/moonshotai/kimi-k2.7-code",
-	"@cf/nvidia/nemotron-3-120b-a12b",
 ];
 ```
 
 The tool pool contains models verified for function calling. Auto Router still decides between eligible models inside the selected pool.
-
-NVIDIA Nemotron 3 Super is a Cloudflare-hosted, reasoning and function-calling model. NVIDIA publishes the model weights under the NVIDIA Nemotron Open Model License. Its 120B mixture-of-experts architecture activates approximately 12B parameters per forward pass, making it most appropriate for complex and agentic/tool routes rather than the simple pool.
 
 ### Why use separate pools?
 

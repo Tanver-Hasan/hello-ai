@@ -9,6 +9,7 @@ import {
 	modelsForDecision,
 	parseRouteDecision,
 } from "../src/index";
+import { isReadonlyAgentRequest } from "../src/agents/edgeword";
 
 const post = (body: BodyInit) =>
 	exports.default.fetch("https://example.com/chat/stream", {
@@ -64,14 +65,8 @@ describe("hello-ai", () => {
 		expect(body.router.id).toBe("cloudflare/auto");
 		expect(body.pools.simple).toContain("@cf/openai/gpt-oss-20b");
 		expect(body.pools.complex).toContain("@cf/zai-org/glm-5.2");
-		expect(body.pools.complex).toContain(
-			"@cf/nvidia/nemotron-3-120b-a12b",
-		);
 		expect(body.pools.tool).toContain(
 			"@cf/moonshotai/kimi-k2.7-code",
-		);
-		expect(body.pools.tool).toContain(
-			"@cf/nvidia/nemotron-3-120b-a12b",
 		);
 	});
 
@@ -305,7 +300,7 @@ describe("AI Gateway", () => {
 				"cf-aig-session-id": "request-123",
 				"cf-aig-turn-id": "request-123",
 				"cf-aig-allowed-models":
-					"@cf/google/gemma-4-26b-a4b-it,@cf/moonshotai/kimi-k2.7-code,@cf/qwen/qwen3.8-27b,@cf/zai-org/glm-5.2,@cf/nvidia/nemotron-3-120b-a12b",
+					"@cf/google/gemma-4-26b-a4b-it,@cf/moonshotai/kimi-k2.7-code,@cf/qwen/qwen3.8-27b,@cf/zai-org/glm-5.2",
 			},
 		});
 	});
@@ -434,7 +429,85 @@ describe("Clef routing decisions", () => {
 		).toEqual([
 			"@cf/google/gemma-4-26b-a4b-it",
 			"@cf/moonshotai/kimi-k2.7-code",
-			"@cf/nvidia/nemotron-3-120b-a12b",
 		]);
+	});
+});
+
+describe("EdgewordAgent", () => {
+	it("allows local and Access-authenticated owners", () => {
+		expect(
+			isReadonlyAgentRequest(
+				new Request("http://localhost/agents/edgeword-agent/test"),
+			),
+		).toBe(false);
+		expect(
+			isReadonlyAgentRequest(
+				new Request("https://example.com/agents/edgeword-agent/test", {
+					headers: { "Cf-Access-Jwt-Assertion": "verified-by-access" },
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("makes viewers and unauthenticated remote connections readonly", () => {
+		expect(
+			isReadonlyAgentRequest(
+				new Request(
+					"https://example.com/agents/edgeword-agent/test?role=viewer",
+					{ headers: { "Cf-Access-Jwt-Assertion": "verified-by-access" } },
+				),
+			),
+		).toBe(true);
+		expect(
+			isReadonlyAgentRequest(
+				new Request("https://example.com/agents/edgeword-agent/test"),
+			),
+		).toBe(true);
+	});
+
+	it("synchronizes preferences with optimistic version checks", async () => {
+		const agent = env.EdgewordAgent.getByName(`preferences-${crypto.randomUUID()}`);
+		const updated = await agent.setPreferences("protected", false, 0);
+
+		expect(updated).toMatchObject({
+			mode: "protected",
+			traceVisible: false,
+			turnCount: 0,
+			version: 1,
+		});
+		await expect(
+			agent.setPreferences("stream", true, 0),
+		).rejects.toThrow("State changed; reload and retry");
+	});
+
+	it("deduplicates routing events by request ID", async () => {
+		const agent = env.EdgewordAgent.getByName(`routing-${crypto.randomUUID()}`);
+		const snapshot = {
+			requestId: crypto.randomUUID(),
+			decision: "complex" as const,
+			confidence: 0.87,
+			model: "@cf/zai-org/glm-5.2",
+			cost: 0.0002,
+		};
+
+		await agent.recordRouting(snapshot);
+		const duplicate = await agent.recordRouting(snapshot);
+		const events = await agent.listRoutingEvents();
+
+		expect(duplicate.turnCount).toBe(1);
+		expect(duplicate.lastRouting).toEqual(snapshot);
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject(snapshot);
+	});
+
+	it("isolates conversation Agent instances", async () => {
+		const first = env.EdgewordAgent.getByName(`first-${crypto.randomUUID()}`);
+		const second = env.EdgewordAgent.getByName(`second-${crypto.randomUUID()}`);
+
+		await first.setPreferences("protected", true, 0);
+		const secondState = await second.setMode("stream");
+
+		expect(secondState.mode).toBe("stream");
+		expect(secondState.version).toBe(1);
 	});
 });
